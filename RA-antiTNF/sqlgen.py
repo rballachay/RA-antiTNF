@@ -7,10 +7,10 @@ N_CHROMS = 22
 
 def create_dosage_data(
     n_chroms=N_CHROMS,
-    database="dosage_data.db",
+    database="dbs/dosage_data.db",
     dosage_prefix=Path("data/DREAM_RA_Responders_DosageData"),
     filename=Path("Training_chr.dos"),
-    start_col=7,
+    start_col=6,
 ):
     # chromosome file names
     chr_filenames = map(
@@ -39,7 +39,7 @@ def create_dosage_data(
         SNPlookup = []
         with open(file, "r") as input_file:
             for lines in input_file:
-                lines = lines.split("\n")[0].split(" ")
+                lines = lines.strip("\n").split(" ")
                 _update = lines[:start_col] + [
                     ", ".join(list(map(str, lines[start_col:])))
                 ]
