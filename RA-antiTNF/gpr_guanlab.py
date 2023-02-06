@@ -1,36 +1,76 @@
 import copy
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import seaborn as sns
 from caching import cachewrapper
 from datareader import create_clinical_data, get_dosage_data
 from globals import TEST_INDEX
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF
+from sklearn.utils import resample
 
+RANDOM_STATE = 0
 META_PATH = "metadata/guanlab/"
 SNP_BY_DRUG = {
     "adalumimab": "Guanlab_adalimumab_snps",
     "etanercept": "Guanlab_etanercept_snps",
     "infliximab": "Guanlab_infliximab_snps",
 }
-PARAMS = {"alpha": 4, "kernel": RBF(100000.0), "random_state": 0}
+PARAMS = {"alpha": 4e-1, "kernel": RBF(), "random_state": RANDOM_STATE}
+SAMPLES = 10
 
 
 def main(params=PARAMS):
     gpr = GaussianProcessRegressor(**params)
+    raw_results = run_cross_validation(gpr)
+    stat_results = produce_statistics(raw_results)
+    f = sns.violinplot(data=stat_results, x="drug_model", y="pearson")
+    fig = f.get_figure()
+    fig.savefig("results.png")
 
+
+def produce_statistics(raw_results: pd.DataFrame):
+    def calc_r(group):
+        drugmodel = group["drug_model"].values[0]
+        sample = group["samples"].values[0]
+        pearson = np.corrcoef(group["y_real"], group["y_hat"])[0, 1]
+        return pd.DataFrame(
+            [{"drug_model": drugmodel, "sample": sample, "pearson": pearson}]
+        )
+
+    stat_results = (
+        raw_results.groupby(["drug_model", "samples"], as_index=False)
+        .apply(calc_r)
+        .reset_index(drop=True)
+    )
+    return stat_results
+
+
+@cachewrapper("cache", "guanlab_exp_results")
+def run_cross_validation(gpr):
     results = []
     for drug, X_train, X_test, y_train, y_test in data_generator():
-        gpr_i = copy.deepcopy(gpr)
-        gpr_i.fit(X_train, y_train)
-        y_hat = gpr_i.predict(X_test)
+        for sample in range(SAMPLES):
+            # copy model
+            gpr_i = copy.deepcopy(gpr)
+            _X_train, _y_train = resample(X_train, y_train)
+            _X_test, _y_test = resample(X_test, y_test)
 
-        drug_list = [drug] * len(y_hat)
-        _results_i = list(zip(drug_list, y_hat, y_test))
-        results.extend(_results_i)
-    results_df = pd.DataFrame(results, colummns=["drug_model", "y_hat", "y_real"])
-    print(results_df)
+            # fit + predict model
+            gpr_i.fit(_X_train, _y_train)
+            y_hat = gpr_i.predict(_X_test)
+
+            # prepare results
+            drug_list = [drug] * len(y_hat)
+            samples = [sample + 1] * len(y_hat)
+            _results_i = list(zip(drug_list, y_hat, _y_test, samples))
+            results.extend(_results_i)
+    results_df = pd.DataFrame(
+        results, columns=["drug_model", "y_hat", "y_real", "samples"]
+    )
+    return results_df
 
 
 def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG):
