@@ -8,8 +8,10 @@ from caching import cachewrapper
 from datareader import create_clinical_data, get_dosage_data
 from globals import TEST_INDEX
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF
+from sklearn.gaussian_process.kernels import RBF, ExpSineSquared, RationalQuadratic
 from sklearn.utils import resample
+from skopt import BayesSearchCV
+from skopt.space import Real
 
 RANDOM_STATE = 0
 META_PATH = "metadata/guanlab/"
@@ -18,17 +20,51 @@ SNP_BY_DRUG = {
     "etanercept": "Guanlab_etanercept_snps",
     "infliximab": "Guanlab_infliximab_snps",
 }
-PARAMS = {"alpha": 4e-1, "kernel": RBF(), "random_state": RANDOM_STATE}
+# kernels need to be defined as categorical because we cannot use the bayesian on kernels
+# instead of model
+_KERNELS = [
+    RBF,
+]  # RBF, ExpSineSquared]
+_LENGTH_SPACE = np.logspace(-1, 4, num=6)
+KERNEL_SPACE = [k(l) for k in _KERNELS for l in _LENGTH_SPACE]
+
+# define global values to optimize
+HYPER_SPACE = {"alpha": Real(1e-6, 1e2, prior="log-uniform")}
 SAMPLES = 10
 
 
-def main(params=PARAMS):
-    gpr = GaussianProcessRegressor(**params)
-    raw_results = run_cross_validation(gpr)
+def main(
+    model=GaussianProcessRegressor,
+    hyper_space=HYPER_SPACE,
+    kernels=KERNEL_SPACE,
+    random_state=RANDOM_STATE,
+):
+    # create our model with all default parameters
+    raw_results = run_cross_validation(model, hyper_space, kernels, random_state)
     stat_results = produce_statistics(raw_results)
     f = sns.violinplot(data=stat_results, x="drug_model", y="pearson")
     fig = f.get_figure()
+    sns.set_theme()
     fig.savefig("results.png")
+
+
+def choose_best_model(X, y, model, hyper_space, kernels, random_state):
+    kernel_best = []
+    for kernel in kernels:
+        opt = BayesSearchCV(
+            model(kernel=kernel),
+            hyper_space,
+            n_iter=10,
+            random_state=random_state,
+            verbose=10,
+        )
+        opt.fit(X, y)
+        kernel_best.append(opt)
+    # sort by best score
+    sorted_models = sorted(kernel_best, key=lambda x: x.best_score_, reverse=True)
+
+    # return best estimator, aka best model over all hyperparameters
+    return sorted_models[0].best_estimator_
 
 
 def produce_statistics(raw_results: pd.DataFrame):
@@ -49,9 +85,13 @@ def produce_statistics(raw_results: pd.DataFrame):
 
 
 @cachewrapper("cache", "guanlab_exp_results")
-def run_cross_validation(gpr):
+def run_cross_validation(model, hyper_space, kernels, random_state):
     results = []
     for drug, X_train, X_test, y_train, y_test in data_generator():
+        gpr = choose_best_model(
+            X_train, y_train, model, hyper_space, kernels, random_state
+        )
+
         for sample in range(SAMPLES):
             # copy model
             gpr_i = copy.deepcopy(gpr)
