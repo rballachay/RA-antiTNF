@@ -9,9 +9,11 @@ from datareader import create_clinical_data, get_dosage_data
 from globals import TEST_INDEX
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ExpSineSquared, RationalQuadratic
+from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.utils import resample
 from skopt import BayesSearchCV
 from skopt.space import Real
+from utils import NonResponseRA
 
 RANDOM_STATE = 0
 META_PATH = "metadata/guanlab/"
@@ -42,10 +44,19 @@ def main(
     # create our model with all default parameters
     raw_results = run_cross_validation(model, hyper_space, kernels, random_state)
     stat_results = produce_statistics(raw_results)
+
+    sns.set_theme()
     f = sns.violinplot(data=stat_results, x="drug_model", y="pearson")
     fig = f.get_figure()
-    sns.set_theme()
-    fig.savefig("results.png")
+    fig.savefig("pearson_results.png")
+
+    f = sns.violinplot(data=stat_results, x="drug_model", y="auroc")
+    fig = f.get_figure()
+    fig.savefig("auroc_results.png")
+
+    f = sns.violinplot(data=stat_results, x="drug_model", y="accuracy")
+    fig = f.get_figure()
+    fig.savefig("accuracy_results.png")
 
 
 def choose_best_model(X, y, model, hyper_space, kernels, random_state):
@@ -57,9 +68,12 @@ def choose_best_model(X, y, model, hyper_space, kernels, random_state):
             n_iter=10,
             random_state=random_state,
             verbose=10,
+            n_points=10,
+            cv=5,
         )
         opt.fit(X, y)
         kernel_best.append(opt)
+        break
     # sort by best score
     sorted_models = sorted(kernel_best, key=lambda x: x.best_score_, reverse=True)
 
@@ -72,8 +86,18 @@ def produce_statistics(raw_results: pd.DataFrame):
         drugmodel = group["drug_model"].values[0]
         sample = group["samples"].values[0]
         pearson = np.corrcoef(group["y_real"], group["y_hat"])[0, 1]
+        auroc = roc_auc_score(group["cat_real"], group["cat_hat"])
+        accuracy = accuracy_score(group["cat_real"], group["cat_hat"])
         return pd.DataFrame(
-            [{"drug_model": drugmodel, "sample": sample, "pearson": pearson}]
+            [
+                {
+                    "drug_model": drugmodel,
+                    "sample": sample,
+                    "pearson": pearson,
+                    "auroc": auroc,
+                    "accuracy": accuracy,
+                }
+            ]
         )
 
     stat_results = (
@@ -87,11 +111,11 @@ def produce_statistics(raw_results: pd.DataFrame):
 @cachewrapper("cache", "guanlab_exp_results")
 def run_cross_validation(model, hyper_space, kernels, random_state):
     results = []
-    for drug, X_train, X_test, y_train, y_test in data_generator():
+    for drug, X_train, X_test, y_train, y_test, cat_df in data_generator():
         gpr = choose_best_model(
             X_train, y_train, model, hyper_space, kernels, random_state
         )
-
+        print(gpr.get_params())
         for sample in range(SAMPLES):
             # copy model
             gpr_i = copy.deepcopy(gpr)
@@ -105,10 +129,18 @@ def run_cross_validation(model, hyper_space, kernels, random_state):
             # prepare results
             drug_list = [drug] * len(y_hat)
             samples = [sample + 1] * len(y_hat)
-            _results_i = list(zip(drug_list, y_hat, _y_test, samples))
+
+            # predicted response
+            cat_hat = list(map(NonResponseRA(), cat_df["baselineDAS"], y_hat))
+            cat_real = cat_df["Response.NonResp"]
+
+            _results_i = list(
+                zip(drug_list, y_hat, _y_test, cat_hat, cat_real, samples)
+            )
             results.extend(_results_i)
     results_df = pd.DataFrame(
-        results, columns=["drug_model", "y_hat", "y_real", "samples"]
+        results,
+        columns=["drug_model", "y_hat", "y_real", "cat_hat", "cat_real", "samples"],
     )
     return results_df
 
@@ -135,6 +167,7 @@ def feature_engineering(data):
 
 def split_dfs(train_df, test_df):
     y_cols = ["Response.deltaDAS"]
+    cat_cols = ["Response.NonResp", "baselineDAS"]
     not_X_cols = [
         "Response.deltaDAS",
         "Cohort",
@@ -149,7 +182,8 @@ def split_dfs(train_df, test_df):
     X_test = test_df.drop(not_X_cols, axis=1).values
     y_train = train_df[y_cols].values.flatten()
     y_test = test_df[y_cols].values.flatten()
-    return X_train, X_test, y_train, y_test
+    cat_df = test_df[cat_cols]
+    return X_train, X_test, y_train, y_test, cat_df
 
 
 @cachewrapper("cache", "guanlab_fulldata")
