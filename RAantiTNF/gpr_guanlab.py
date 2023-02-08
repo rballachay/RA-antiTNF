@@ -1,6 +1,7 @@
 import copy
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -50,16 +51,19 @@ def main(
     fig = f.get_figure()
     fig.savefig("pearson_results.png")
 
+    plt.clf()
     f = sns.violinplot(data=stat_results, x="drug_model", y="auroc")
     fig = f.get_figure()
     fig.savefig("auroc_results.png")
 
+    plt.clf()
     f = sns.violinplot(data=stat_results, x="drug_model", y="accuracy")
     fig = f.get_figure()
     fig.savefig("accuracy_results.png")
 
 
 def choose_best_model(X, y, model, hyper_space, kernels, random_state):
+    return GaussianProcessRegressor(kernel=RBF(1000), alpha=4)
     kernel_best = []
     for kernel in kernels:
         opt = BayesSearchCV(

@@ -7,33 +7,39 @@ class NonResponseRA:
     # as non response
     NonReponses = {"good": 0, "moderate": 0, "none": 1}
 
-    @classmethod
-    def __call__(cls, baseline_das, delta_das):
+    def __call__(self, baseline_das, delta_das):
         # we have eular categories, but then we also need to
         # determine whether or not we categorize a response
-        eular = cls.__eular__cat(baseline_das, delta_das)
+        end_das = baseline_das - delta_das
+        eular = self.__eular__cat(end_das, delta_das)
 
         # convert category to binary response
-        return cls.NonReponses[eular]
+        return self.NonReponses[eular]
 
     @staticmethod
-    def __eular__cat(baseline_das, delta_das):
+    def __eular__cat(end_das, delta_das):
+        """used elif instead of else for clarity,"""
         # if baseline das is already low
-        if baseline_das < 2.4:
+        if end_das <= 3.2:
             if delta_das > 1.2:
                 return "good"
-            return "moderate"
+            elif delta_das > 0.6:
+                return "moderate"
+            elif delta_das <= 0.6:
+                return "none"
 
         # if baseline das is moderate
-        elif baseline_das <= 3.7:
-            if delta_das > 0.6:
+        elif end_das <= 5.1:
+            if delta_das >= 0.6:
                 return "moderate"
-            return "none"
+            elif delta_das < 0.6:
+                return "none"
 
         # if baseline das is high
         # at this point, we could just use
         # else, this is for readability
-        elif baseline_das > 3.7:
-            if delta_das > 1.2:
+        elif end_das > 5.1:
+            if delta_das >= 1.2:
                 return "moderate"
-            return "none"
+            elif delta_das < 1.2:
+                return "none"
