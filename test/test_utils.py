@@ -10,7 +10,7 @@ def test(testpath="data/DREAM_RA_Responders_PhenoCov_Full.txt"):
     test = pd.read_csv(testpath, sep=" ")
 
     non_response_test = tuple(
-        map(NonResponseRA(False), test["baselineDAS"], test["Response.deltaDAS"])
+        map(NonResponseRA(), test["baselineDAS"], test["Response.deltaDAS"])
     )
     non_response_real = tuple(test["Response.NonResp"].tolist())
     assert non_response_test == non_response_real

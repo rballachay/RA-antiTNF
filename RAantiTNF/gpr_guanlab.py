@@ -9,7 +9,9 @@ from caching import cachewrapper
 from datareader import create_clinical_data, get_dosage_data
 from globals import TEST_INDEX
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ExpSineSquared, RationalQuadratic
+from sklearn.gaussian_process.kernels import (RBF, ExpSineSquared,
+                                              RationalQuadratic)
+from sklearn.impute import KNNImputer
 from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.utils import resample
 from skopt import BayesSearchCV
@@ -33,7 +35,7 @@ KERNEL_SPACE = [k(l) for k in _KERNELS for l in _LENGTH_SPACE]
 
 # define global values to optimize
 HYPER_SPACE = {"alpha": Real(1e-6, 1e2, prior="log-uniform")}
-SAMPLES = 10
+SAMPLES = 3
 
 
 def main(
@@ -63,7 +65,7 @@ def main(
 
 
 def choose_best_model(X, y, model, hyper_space, kernels, random_state):
-    return GaussianProcessRegressor(kernel=RBF(1000), alpha=4)
+    #return GaussianProcessRegressor(kernel=RBF(1000), alpha=4)
     kernel_best = []
     for kernel in kernels:
         opt = BayesSearchCV(
@@ -119,12 +121,12 @@ def run_cross_validation(model, hyper_space, kernels, random_state):
         gpr = choose_best_model(
             X_train, y_train, model, hyper_space, kernels, random_state
         )
-        print(gpr.get_params())
+
         for sample in range(SAMPLES):
             # copy model
             gpr_i = copy.deepcopy(gpr)
             _X_train, _y_train = resample(X_train, y_train)
-            _X_test, _y_test = resample(X_test, y_test)
+            _X_test, _y_test, _cat_df = resample(X_test, y_test, cat_df)
 
             # fit + predict model
             gpr_i.fit(_X_train, _y_train)
@@ -135,8 +137,8 @@ def run_cross_validation(model, hyper_space, kernels, random_state):
             samples = [sample + 1] * len(y_hat)
 
             # predicted response
-            cat_hat = list(map(NonResponseRA(), cat_df["baselineDAS"], y_hat))
-            cat_real = cat_df["Response.NonResp"]
+            cat_hat = list(map(NonResponseRA(), _cat_df["baselineDAS"], y_hat))
+            cat_real = _cat_df["Response.NonResp"]
 
             _results_i = list(
                 zip(drug_list, y_hat, _y_test, cat_hat, cat_real, samples)
@@ -154,7 +156,7 @@ def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG):
     data = create_drug_df(path, snp_dict)
     engineered = feature_engineering(data)
     for drug in engineered["TNF-drug"].unique():
-        _df = data[data["TNF-drug"] == drug]
+        _df = data[data["TNF-drug"] == drug].reset_index(drop=True)
         _df = _df.dropna(axis=1)
         _train = _df.iloc[:TEST_INDEX]
         _test = _df.iloc[TEST_INDEX:]
@@ -162,6 +164,10 @@ def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG):
 
 
 def feature_engineering(data):
+    to_impute = ["baselineDAS", "Age", "Gender", "Mtx"]
+    knn = KNNImputer(n_neighbors=5)
+    data[to_impute] = knn.fit_transform(data[to_impute])
+
     # convert drugs to one-hot encoding
     onehot_drugs = pd.get_dummies(data["Drug"])
     data = data.drop(["Drug"], axis=1)
@@ -181,7 +187,6 @@ def split_dfs(train_df, test_df):
         "ID",
         "TNF-drug",
     ]
-
     X_train = train_df.drop(not_X_cols, axis=1).values
     X_test = test_df.drop(not_X_cols, axis=1).values
     y_train = train_df[y_cols].values.flatten()
