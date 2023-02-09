@@ -4,15 +4,18 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import scikitplot as skplt
 import seaborn as sns
 from caching import cachewrapper
 from datareader import create_clinical_data, get_dosage_data
 from globals import TEST_INDEX
+from scipy.stats import pearsonr
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import (RBF, ExpSineSquared,
-                                              RationalQuadratic)
+from sklearn.gaussian_process.kernels import RBF, ExpSineSquared, RationalQuadratic
 from sklearn.impute import KNNImputer
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.utils import resample
 from skopt import BayesSearchCV
 from skopt.space import Real
@@ -35,7 +38,8 @@ KERNEL_SPACE = [k(l) for k in _KERNELS for l in _LENGTH_SPACE]
 
 # define global values to optimize
 HYPER_SPACE = {"alpha": Real(1e-6, 1e2, prior="log-uniform")}
-SAMPLES = 3
+SAMPLES = 10
+THRESHOLD = 1.5
 
 
 def main(
@@ -54,6 +58,13 @@ def main(
     fig.savefig("pearson_results.png")
 
     plt.clf()
+    f = sns.scatterplot(data=raw_results, x="y_real", y="y_hat", hue="drug_model")
+    f.set_xlim((-2, 7))
+    f.set_ylim((-2, 7))
+    fig = f.get_figure()
+    fig.savefig("scatterplot_results.png")
+
+    plt.clf()
     f = sns.violinplot(data=stat_results, x="drug_model", y="auroc")
     fig = f.get_figure()
     fig.savefig("auroc_results.png")
@@ -63,9 +74,17 @@ def main(
     fig = f.get_figure()
     fig.savefig("accuracy_results.png")
 
+    plt.clf()
+    a = raw_results[["cat_hat"]].values
+    b = 1 - raw_results[["cat_hat"]].values
+    cat = np.concatenate([a, b], axis=1)
+    f = skplt.metrics.plot_roc_curve(raw_results["cat_real"].values, cat)
+    fig = f.get_figure()
+    fig.savefig("roccurve_results.png")
+
 
 def choose_best_model(X, y, model, hyper_space, kernels, random_state):
-    #return GaussianProcessRegressor(kernel=RBF(1000), alpha=4)
+    # return GaussianProcessRegressor(kernel=RBF(1000), alpha=4)
     kernel_best = []
     for kernel in kernels:
         opt = BayesSearchCV(
@@ -79,7 +98,6 @@ def choose_best_model(X, y, model, hyper_space, kernels, random_state):
         )
         opt.fit(X, y)
         kernel_best.append(opt)
-        break
     # sort by best score
     sorted_models = sorted(kernel_best, key=lambda x: x.best_score_, reverse=True)
 
@@ -91,9 +109,9 @@ def produce_statistics(raw_results: pd.DataFrame):
     def calc_r(group):
         drugmodel = group["drug_model"].values[0]
         sample = group["samples"].values[0]
-        pearson = np.corrcoef(group["y_real"], group["y_hat"])[0, 1]
-        auroc = roc_auc_score(group["cat_real"], group["cat_hat"])
-        accuracy = accuracy_score(group["cat_real"], group["cat_hat"])
+        pearson = pearsonr(group["y_real"], group["y_hat"])[0]
+        auroc = roc_auc_score(group["cat_real"].values, group["cat_hat"].values)
+        accuracy = accuracy_score(group["cat_real"].values, group["cat_hat"].values)
         return pd.DataFrame(
             [
                 {
@@ -114,10 +132,19 @@ def produce_statistics(raw_results: pd.DataFrame):
     return stat_results
 
 
-@cachewrapper("cache", "guanlab_exp_results")
+# @cachewrapper("cache", "guanlab_exp_results")
 def run_cross_validation(model, hyper_space, kernels, random_state):
     results = []
-    for drug, X_train, X_test, y_train, y_test, cat_df in data_generator():
+    for (
+        drug,
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        das_test,
+        cat_test,
+        yscaler,
+    ) in data_generator():
         gpr = choose_best_model(
             X_train, y_train, model, hyper_space, kernels, random_state
         )
@@ -126,22 +153,27 @@ def run_cross_validation(model, hyper_space, kernels, random_state):
             # copy model
             gpr_i = copy.deepcopy(gpr)
             _X_train, _y_train = resample(X_train, y_train)
-            _X_test, _y_test, _cat_df = resample(X_test, y_test, cat_df)
+            _X_test, _y_test, _das_test, _cat_test = resample(
+                X_test, y_test, das_test, cat_test
+            )
 
             # fit + predict model
             gpr_i.fit(_X_train, _y_train)
-            y_hat = gpr_i.predict(_X_test)
+            y_hat = yscaler.inverse_transform(gpr_i.predict(_X_test)).flatten()
+            _y_test = yscaler.inverse_transform(_y_test).flatten()
 
             # prepare results
             drug_list = [drug] * len(y_hat)
             samples = [sample + 1] * len(y_hat)
 
             # predicted response
-            cat_hat = list(map(NonResponseRA(), _cat_df["baselineDAS"], y_hat))
-            cat_real = _cat_df["Response.NonResp"]
+            # cat_hat = list(map(NonResponseRA(), _das_test, y_hat))
+            cat_hat = y_hat < THRESHOLD
+
+            assert len(cat_hat) == len(_cat_test)
 
             _results_i = list(
-                zip(drug_list, y_hat, _y_test, cat_hat, cat_real, samples)
+                zip(drug_list, y_hat, _y_test, cat_hat, _cat_test, samples)
             )
             results.extend(_results_i)
     results_df = pd.DataFrame(
@@ -151,16 +183,42 @@ def run_cross_validation(model, hyper_space, kernels, random_state):
     return results_df
 
 
-def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG):
+def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_INDEX):
     # either create data or read from cache
     data = create_drug_df(path, snp_dict)
     engineered = feature_engineering(data)
     for drug in engineered["TNF-drug"].unique():
         _df = data[data["TNF-drug"] == drug].reset_index(drop=True)
         _df = _df.dropna(axis=1)
-        _train = _df.iloc[:TEST_INDEX]
-        _test = _df.iloc[TEST_INDEX:]
-        yield drug, *split_dfs(_train, _test)
+
+        X, y, das, cat = split_xy(_df)
+
+        X, y, yscaler = scale_xy(X, y)
+
+        X_train, X_test, y_train, y_test, das_test, cat_test = test_train_split(
+            X, y, das, cat, test_index
+        )
+
+        yield drug, X_train, X_test, y_train, y_test, das_test, cat_test, yscaler
+
+
+def scale_xy(X, y):
+    yscaler = StandardScaler()
+    xscaler = StandardScaler()
+    X = xscaler.fit_transform(X)
+    y = yscaler.fit_transform(y)
+    return X, y, yscaler
+
+
+def test_train_split(X, y, das, cat, test_index):
+    return (
+        X[:test_index],
+        X[test_index:],
+        y[:test_index],
+        y[test_index:],
+        das[test_index:],
+        cat[test_index:],
+    )
 
 
 def feature_engineering(data):
@@ -171,13 +229,13 @@ def feature_engineering(data):
     # convert drugs to one-hot encoding
     onehot_drugs = pd.get_dummies(data["Drug"])
     data = data.drop(["Drug"], axis=1)
+
     data = pd.concat([data, onehot_drugs], axis=1)
     return data
 
 
-def split_dfs(train_df, test_df):
+def split_xy(df):
     y_cols = ["Response.deltaDAS"]
-    cat_cols = ["Response.NonResp", "baselineDAS"]
     not_X_cols = [
         "Response.deltaDAS",
         "Cohort",
@@ -187,12 +245,21 @@ def split_dfs(train_df, test_df):
         "ID",
         "TNF-drug",
     ]
-    X_train = train_df.drop(not_X_cols, axis=1).values
+    X = df.drop(not_X_cols, axis=1).values
+    y = df[y_cols].values
+    das = df["baselineDAS"].values
+    cat = df["Response.NonResp"].values
+    return X, y, das, cat
+
+
+"""
+    X_train = df.drop(not_X_cols, axis=1).values
     X_test = test_df.drop(not_X_cols, axis=1).values
     y_train = train_df[y_cols].values.flatten()
     y_test = test_df[y_cols].values.flatten()
-    cat_df = test_df[cat_cols]
-    return X_train, X_test, y_train, y_test, cat_df
+    das_test = test_df[ "baselineDAS"].values
+    cat_test = test_df[ "Response.NonResp"].values
+"""
 
 
 @cachewrapper("cache", "guanlab_fulldata")
