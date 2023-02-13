@@ -1,7 +1,10 @@
 # ignore specific folders with raw data
 cache/
-data/
 dbs/
+
+!data/
+data/*
+!data/utils/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

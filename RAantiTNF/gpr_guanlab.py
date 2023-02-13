@@ -252,16 +252,6 @@ def split_xy(df):
     return X, y, das, cat
 
 
-"""
-    X_train = df.drop(not_X_cols, axis=1).values
-    X_test = test_df.drop(not_X_cols, axis=1).values
-    y_train = train_df[y_cols].values.flatten()
-    y_test = test_df[y_cols].values.flatten()
-    das_test = test_df[ "baselineDAS"].values
-    cat_test = test_df[ "Response.NonResp"].values
-"""
-
-
 @cachewrapper("cache", "guanlab_fulldata")
 def create_drug_df(path, snp_dict):
     """returns a dictionary with three keys, one for each drug. each of
