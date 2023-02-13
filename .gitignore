@@ -2,6 +2,9 @@
 cache/
 dbs/
 
+# this file is too big to include, unfortunately
+results/PLINK/plink.assoc.linear
+
 !data/
 data/*
 !data/utils/
