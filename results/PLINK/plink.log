@@ -1,32 +1,30 @@
 PLINK v1.90b7 64-bit (16 Jan 2023)
 Options in effect:
-  --bfile data/Merged_Genotype/mergedDREAM
-  --linear hide-covar
-  --pheno data/utils/DREAM_pheno_FID.txt
-  --pheno-name Response.deltaDAS
+  --bfile data/Merged_Genotype/MergedGen
+  --clump plink.assoc.logistic
+  --exclude duplicateSNP.dups
 
 Hostname: Rileys-MacBook-Pro-2.local
 Working directory: /Users/RileyBallachay/Documents/McGill/RA-antiTNF
-Start time: Mon Feb 13 13:51:33 2023
+Start time: Tue Feb 14 11:20:46 2023
 
-Random number seed: 1676314293
+Random number seed: 1676391646
 16384 MB RAM detected; reserving 8192 MB for main workspace.
-1342726 variants loaded from .bim file.
-2706 people (696 males, 1540 females, 470 ambiguous) loaded from .fam.
-Ambiguous sex IDs written to plink.nosex .
-2706 phenotype values present after --pheno.
+2539613 variants loaded from .bim file.
+2706 people (705 males, 2000 females, 1 ambiguous) loaded from .fam.
+Ambiguous sex ID written to plink.nosex .
+2031 phenotype values loaded from .fam.
+--exclude: 2539601 variants remaining.
 Warning: Ignoring phenotypes of missing-sex samples.  If you don't want those
 phenotypes to be ignored, use the --allow-no-sex flag.
 Using 1 thread (no multithreaded calculations invoked).
 Before main variant filters, 2706 founders and 0 nonfounders present.
 Calculating allele frequencies... done.
-Warning: 33507 het. haploid genotypes present (see plink.hh ); many commands
-treat these as missing.
-Warning: Nonmissing nonmale Y chromosome genotype(s) present; many commands
-treat these as missing.
-Total genotyping rate is 0.340967.
-1342726 variants and 2706 people pass filters and QC.
-Phenotype data is quantitative.
-Writing linear model association results to plink.assoc.linear ... done.
+Total genotyping rate is 0.949477.
+2539601 variants and 2706 people pass filters and QC.
+Among remaining phenotypes, 436 are cases and 1594 are controls.  (676
+phenotypes are missing.)
+--clump: 86 clumps formed from 247 top variants.
+Results written to plink.clumped .
 
-End time: Mon Feb 13 13:52:32 2023
+End time: Tue Feb 14 11:20:49 2023
