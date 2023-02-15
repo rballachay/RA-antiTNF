@@ -1,10 +1,10 @@
 import copy
+from functools import partial
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import scikitplot as skplt
 import seaborn as sns
 from caching import cachewrapper
 from datareader import create_clinical_data, get_dosage_data
@@ -13,20 +13,17 @@ from scipy.stats import pearsonr
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import KNNImputer
 from sklearn.linear_model import Lasso
-from sklearn.metrics import accuracy_score, roc_auc_score
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.metrics import accuracy_score, auc, roc_auc_score, roc_curve
+from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
 from sklearn.utils import resample
 from skopt import BayesSearchCV
 from skopt.space import Categorical, Integer, Real
-from utils import NonResponseRA
 
 RANDOM_STATE = 0
 META_PATH = "metadata/SJU_plink/"
 SNP_BY_DRUG = {
-    "adalumimab": "plink_LD_SNPs",
-    "etanercept": "plink_LD_SNPs",
-    "infliximab": "plink_LD_SNPs",
+    "all": "plink_LD_SNPs",
 }
 HYPER_DICT = {
     Lasso: {"alpha": Real(1e-3, 1, prior="log-uniform")},
@@ -37,60 +34,139 @@ HYPER_DICT = {
     },
     RandomForestRegressor: {"n_estimators": Integer(10, 1000, prior="log-uniform")},
 }
-
+MODEL_DICT = {
+    Lasso: Lasso(alpha=0.01),
+    SVR: SVR(kernel="linear", C=0.1, epsilon=0.01),
+    RandomForestRegressor: RandomForestRegressor(n_estimators=300),
+}
+PLOT_DICT = {
+    "pearson": "pearson_results.png",
+    "scatterplot": "scatterplot_results.png",
+    "auroc": "auroc_results.png",
+    "accuracy": "accuracy_results.png",
+    "roccurve": "roccurve_results.png",
+}
 
 THRESHOLD = 2.5
 SAMPLES = 10
+
+RESULTS_PATH = Path("results/SJU_models/")
 
 
 def main(
     models=(SVR, RandomForestRegressor, Lasso),
     hyper_dict=HYPER_DICT,
     random_state=RANDOM_STATE,
+    results_path=RESULTS_PATH,
+    plot_dict=PLOT_DICT,
 ):
     # create our model with all default parameters
     raw_results = run_cross_validation(models, hyper_dict, random_state)
     stat_results = produce_statistics(raw_results)
+    roc_results = prep_roc_curve(raw_results)
 
+    # assert results path exists
+    results_path.mkdir(parents=True, exist_ok=True)
+
+    # visualize results + plot
+    plots = visualize_results(raw_results, stat_results, roc_results)
+
+    # save to output directory
+    for title, fig in plots.items():
+        fig.savefig(str(results_path / plot_dict[title]))
+
+
+def visualize_results(raw_results, stat_results, roc_results):
+    plots = {}
     sns.set_theme()
-    f = sns.violinplot(data=stat_results, x="drug_model", y="pearson")
-    fig = f.get_figure()
-    fig.savefig("pearson_results.png")
 
-    plt.clf()
-    f = sns.scatterplot(data=raw_results, x="y_real", y="y_hat", hue="drug_model")
+    plt.figure()
+    f = sns.violinplot(data=stat_results, x="model", y="pearson")
+    plots["pearson"] = f.get_figure()
+
+    plt.figure()
+    f = sns.scatterplot(data=raw_results, x="y_real", y="y_hat", hue="model")
     f.set_xlim((-2, 7))
     f.set_ylim((-2, 7))
-    fig = f.get_figure()
-    fig.savefig("scatterplot_results.png")
+    plots["scatterplot"] = f.get_figure()
 
-    plt.clf()
-    f = sns.violinplot(data=stat_results, x="drug_model", y="auroc")
-    fig = f.get_figure()
-    fig.savefig("auroc_results.png")
+    plt.figure()
+    f = sns.violinplot(data=stat_results, x="model", y="auroc")
+    plots["auroc"] = f.get_figure()
 
-    plt.clf()
-    f = sns.violinplot(data=stat_results, x="drug_model", y="accuracy")
-    fig = f.get_figure()
-    fig.savefig("accuracy_results.png")
+    plt.figure()
+    f = sns.violinplot(data=stat_results, x="model", y="accuracy", hue="model")
+    plots["accuracy"] = f.get_figure()
 
-    plt.clf()
-    a = raw_results[["cat_hat"]].values
-    b = 1 - raw_results[["cat_hat"]].values
-    cat = np.concatenate([a, b], axis=1)
-    f = skplt.metrics.plot_roc_curve(raw_results["cat_real"].values, cat)
-    fig = f.get_figure()
-    fig.savefig("roccurve_results.png")
+    plt.figure(dpi=200)
+    f = sns.lineplot(data=roc_results, x="fpr", y="tpr", hue="model")
+    roc_auc = list(roc_results.groupby(["model"])[["roc_auc"]].mean().itertuples())
+    labels = list(map(lambda x: f"{x[0]}, {x[1]:.2f}", roc_auc))
+    plt.legend(title="Mean AUROC", loc="upper left", labels=labels)
+    plt.plot(np.arange(0, 2), np.arange(0, 2), "k--")
+    plots["roccurve"] = f.get_figure()
+
+    return plots
+
+
+def prep_roc_curve(raw_results):
+    def _myagg(group, bins):
+        groupslice = group.iloc[[0]].copy()
+        to_append = []
+        for bin_i in bins:
+            if int(bin_i) not in set(group["cutter"]):
+                newslice = groupslice.copy()
+                newslice["fpr"] = bin_i
+                newslice["tpr"] = None
+                newslice["roc_auc"] = None
+                to_append.append(newslice)
+
+        if to_append:
+            group = pd.concat([group, *to_append], axis=0)
+        final = group.groupby(["cutter"], as_index=False).agg(
+            {
+                "tpr": np.nanmean,
+                "roc_auc": np.nanmean,
+                "model": "first",
+                "samples": "first",
+            }
+        )
+        final["fpr"] = final["cutter"]
+        return final
+
+    roc_results = {"fpr": [], "tpr": [], "roc_auc": [], "model": [], "samples": []}
+    for title, group in raw_results.groupby(["model", "samples"]):
+        cat_hat = group[["prob_hat"]].values
+        cat_real = group[["cat_real"]].values
+        fpr, tpr, _ = roc_curve(cat_real, cat_hat)
+        roc_auc = auc(fpr, tpr)
+        roc_results["fpr"].extend(fpr.tolist())
+        roc_results["tpr"].extend(tpr.tolist())
+        roc_results["roc_auc"].extend([roc_auc] * len(fpr))
+        roc_results["model"].extend([title[0]] * len(fpr))
+        roc_results["samples"].extend([title[1]] * len(fpr))
+
+    roc_df = pd.DataFrame(roc_results)
+    bins = np.arange(0 - 0.02, 1 + 0.02, 0.02)
+    means = np.convolve(bins, [0.5, 0.5], "valid")
+    roc_df["cutter"] = pd.cut(roc_df["fpr"], bins, labels=means)
+    roc_new = (
+        roc_df.groupby(["samples", "model"], as_index=False)
+        .apply(partial(_myagg, bins=means))
+        .reset_index(drop=True)
+    )
+    return roc_new
 
 
 def choose_best_model(X, y, model, hyper, random_state):
+    return MODEL_DICT[model]
     opt = BayesSearchCV(
         model(),
         hyper,
-        n_iter=2,
+        n_iter=10,
         random_state=random_state,
         verbose=10,
-        n_points=1,
+        n_points=2,
         cv=5,
     )
     opt.fit(X, y)
@@ -102,15 +178,17 @@ def choose_best_model(X, y, model, hyper, random_state):
 def produce_statistics(raw_results: pd.DataFrame):
     def calc_r(group):
         drugmodel = group["drug_model"].values[0]
+        model = group["model"].values[0]
         sample = group["samples"].values[0]
         pearson = pearsonr(group["y_real"], group["y_hat"])[0]
-        auroc = roc_auc_score(group["cat_real"].values, group["cat_hat"].values)
+        auroc = roc_auc_score(group["cat_real"].values, group["prob_hat"].values)
         accuracy = accuracy_score(group["cat_real"].values, group["cat_hat"].values)
         return pd.DataFrame(
             [
                 {
+                    "model": model,
                     "drug_model": drugmodel,
-                    "sample": sample,
+                    "samples": sample,
                     "pearson": pearson,
                     "auroc": auroc,
                     "accuracy": accuracy,
@@ -118,8 +196,11 @@ def produce_statistics(raw_results: pd.DataFrame):
             ]
         )
 
+    X = raw_results["y_hat"]
+    raw_results["prob_hat"] = 1 - (X - X.min(axis=0)) / (X.max(axis=0) - X.min(axis=0))
+    raw_results["cat_hat"] = raw_results["y_hat"] > THRESHOLD
     stat_results = (
-        raw_results.groupby(["drug_model", "samples"], as_index=False)
+        raw_results.groupby(["drug_model", "samples", "model"], as_index=False)
         .apply(calc_r)
         .reset_index(drop=True)
     )
@@ -151,7 +232,7 @@ def run_cross_validation(models, hyper_dict, random_state):
                 _X_test, _y_test, _das_test, _cat_test = resample(
                     X_test, y_test, das_test, cat_test
                 )
-
+                print(f"Sample {sample}, model {best_model}")
                 # fit + predict model
                 best_model_i.fit(_X_train, _y_train)
 
@@ -167,20 +248,14 @@ def run_cross_validation(models, hyper_dict, random_state):
                 # prepare results
                 drug_list = [drug] * len(y_hat)
                 samples = [sample + 1] * len(y_hat)
-
-                # predicted response
-                # cat_hat = list(map(NonResponseRA(), _das_test, y_hat))
-                cat_hat = y_hat < THRESHOLD
-
-                assert len(cat_hat) == len(_cat_test)
+                model_list = [model.__name__] * len(y_hat)
 
                 _results_i = list(
                     zip(
-                        model.__name__,
+                        model_list,
                         drug_list,
                         y_hat,
                         _y_test,
-                        cat_hat,
                         _cat_test,
                         samples,
                     )
@@ -188,7 +263,7 @@ def run_cross_validation(models, hyper_dict, random_state):
                 results.extend(_results_i)
     results_df = pd.DataFrame(
         results,
-        columns=["model", "drug," "y_hat", "y_real", "cat_hat", "cat_real", "samples"],
+        columns=["model", "drug_model", "y_hat", "y_real", "cat_real", "samples"],
     )
     return results_df
 
@@ -197,9 +272,10 @@ def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_I
     # either create data or read from cache
     data = create_drug_df(path, snp_dict)
     engineered = feature_engineering(data)
-    for drug in engineered["TNF-drug"].unique():
-        _df = data[data["TNF-drug"] == drug].reset_index(drop=True)
-        _df = _df.dropna(axis=1)
+
+    for drug in snp_dict:
+        _df = engineered[engineered["TNF-drug"] == drug].reset_index(drop=True)
+        # _df = _df.dropna(axis=1)
 
         X, y, das, cat = split_xy(_df)
 

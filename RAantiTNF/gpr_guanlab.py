@@ -39,7 +39,7 @@ KERNEL_SPACE = [k(l) for k in _KERNELS for l in _LENGTH_SPACE]
 # define global values to optimize
 HYPER_SPACE = {"alpha": Real(1e-6, 1e2, prior="log-uniform")}
 SAMPLES = 10
-THRESHOLD = 1.5
+THRESHOLD = 2.5
 
 
 def main(
@@ -188,7 +188,7 @@ def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_I
     data = create_drug_df(path, snp_dict)
     engineered = feature_engineering(data)
     for drug in engineered["TNF-drug"].unique():
-        _df = data[data["TNF-drug"] == drug].reset_index(drop=True)
+        _df = engineered[engineered["TNF-drug"] == drug].reset_index(drop=True)
         _df = _df.dropna(axis=1)
 
         X, y, das, cat = split_xy(_df)
@@ -210,7 +210,9 @@ def scale_xy(X, y):
     return X, y, yscaler
 
 
-def test_train_split(X, y, das, cat, test_index):
+def test_train_split(X, y, das, cat, test_index, len_data=2706):
+    assert X.shape[0] == len_data
+    assert y.shape[0] == len_data
     return (
         X[:test_index],
         X[test_index:],
