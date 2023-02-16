@@ -1,4 +1,5 @@
 import copy
+import re
 from functools import partial
 from pathlib import Path
 
@@ -45,12 +46,12 @@ PLOT_DICT = {
     "auroc": "auroc_results.png",
     "accuracy": "accuracy_results.png",
     "roccurve": "roccurve_results.png",
+    "xfeatures": "feature_importance.png",
 }
+RESULTS_PATH = Path("results/SJU_models/")
 
 THRESHOLD = 2.5
 SAMPLES = 10
-
-RESULTS_PATH = Path("results/SJU_models/")
 
 
 def main(
@@ -61,7 +62,7 @@ def main(
     plot_dict=PLOT_DICT,
 ):
     # create our model with all default parameters
-    raw_results = run_cross_validation(models, hyper_dict, random_state)
+    raw_results, xfeats = run_cross_validation(models, hyper_dict, random_state)
     stat_results = produce_statistics(raw_results)
     roc_results = prep_roc_curve(raw_results)
 
@@ -69,19 +70,19 @@ def main(
     results_path.mkdir(parents=True, exist_ok=True)
 
     # visualize results + plot
-    plots = visualize_results(raw_results, stat_results, roc_results)
+    plots = visualize_results(raw_results, stat_results, roc_results, xfeats)
 
     # save to output directory
     for title, fig in plots.items():
         fig.savefig(str(results_path / plot_dict[title]))
 
 
-def visualize_results(raw_results, stat_results, roc_results):
+def visualize_results(raw_results, stat_results, roc_results, xfeats):
     plots = {}
     sns.set_theme()
 
     plt.figure()
-    f = sns.violinplot(data=stat_results, x="model", y="pearson")
+    f = sns.violinplot(data=stat_results, x="feature", y="pearson", hue="model")
     plots["pearson"] = f.get_figure()
 
     plt.figure()
@@ -91,20 +92,75 @@ def visualize_results(raw_results, stat_results, roc_results):
     plots["scatterplot"] = f.get_figure()
 
     plt.figure()
-    f = sns.violinplot(data=stat_results, x="model", y="auroc")
+    f = sns.violinplot(data=stat_results, x="feature", y="auroc", hue="model")
     plots["auroc"] = f.get_figure()
 
     plt.figure()
-    f = sns.violinplot(data=stat_results, x="model", y="accuracy", hue="model")
+    f = sns.violinplot(data=stat_results, x="feature", y="accuracy", hue="model")
     plots["accuracy"] = f.get_figure()
 
-    plt.figure(dpi=200)
-    f = sns.lineplot(data=roc_results, x="fpr", y="tpr", hue="model")
-    roc_auc = list(roc_results.groupby(["model"])[["roc_auc"]].mean().itertuples())
-    labels = list(map(lambda x: f"{x[0]}, {x[1]:.2f}", roc_auc))
-    plt.legend(title="Mean AUROC", loc="upper left", labels=labels)
-    plt.plot(np.arange(0, 2), np.arange(0, 2), "k--")
-    plots["roccurve"] = f.get_figure()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+    palettes = [("green", "orange", "blue"), ("red", "purple", "cyan")]
+
+    for ax, (feature, roc_group), palette in zip(
+        axes, roc_results.groupby("feature"), palettes
+    ):
+
+        f = sns.lineplot(
+            data=roc_group, x="fpr", y="tpr", hue="model", ax=ax, palette=palette
+        )
+        ax.plot(np.arange(0, 2), np.arange(0, 2), "k--")
+        ax.title.set_text(f"{feature} Model")
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+
+        roc_auc = list(roc_group.groupby(["model"])[["roc_auc"]].mean().itertuples())
+        labels = list(map(lambda x: f"{x[0]}, {x[1]:.2f}", roc_auc))
+        ax.legend(title="Mean AUROC", loc="upper left", labels=labels)
+
+    plots["roccurve"] = fig
+
+    fig, axes = plt.subplots(
+        xfeats["feature"].nunique(), xfeats["model"].nunique(), figsize=(20, 8)
+    )
+    all_best_features = (
+        xfeats.groupby("label", as_index=False)
+        .max()
+        .sort_values(by="importance", ascending=False)
+    )["label"]
+    all_labels = all_best_features.unique()
+    palette = dict(
+        zip(all_labels, sns.color_palette("Spectral", n_colors=len(all_labels)))
+    )
+    xfeats["SNP"] = xfeats["label"].apply(lambda x: x.startswith("rs"))
+    xfeats["importance"] = xfeats["importance"].abs()
+    for i, feature in enumerate(xfeats.feature.unique()):
+        for j, model in enumerate(xfeats.model.unique()):
+            _xfeatsi = xfeats[
+                (xfeats["feature"] == feature) & (xfeats["model"] == model)
+            ]
+            best_features = (
+                _xfeatsi.groupby("label", as_index=False)
+                .mean()
+                .sort_values(by="importance", ascending=False)
+            )["label"].iloc[:10]
+            _xfeatsi = _xfeatsi[_xfeatsi["label"].isin(best_features)].sort_values(
+                by="label",
+                key=lambda column: column.map(lambda e: list(best_features).index(e)),
+            )
+
+            bar = sns.barplot(
+                data=_xfeatsi, x="label", y="importance", ax=axes[i, j], palette=palette
+            )
+            for item in bar.get_xticklabels():
+                item.set_rotation(20)
+
+            axes[i, j].title.set_text(f"{model} Model, {feature} Features")
+            axes[i, j].set_xlabel("Top 10 Features")
+            axes[i, j].set_ylabel("Coefficient Weight")
+
+    fig.tight_layout()
+    plots["xfeatures"] = fig
 
     return plots
 
@@ -129,13 +185,21 @@ def prep_roc_curve(raw_results):
                 "roc_auc": np.nanmean,
                 "model": "first",
                 "samples": "first",
+                "feature": "first",
             }
         )
         final["fpr"] = final["cutter"]
         return final
 
-    roc_results = {"fpr": [], "tpr": [], "roc_auc": [], "model": [], "samples": []}
-    for title, group in raw_results.groupby(["model", "samples"]):
+    roc_results = {
+        "fpr": [],
+        "tpr": [],
+        "roc_auc": [],
+        "model": [],
+        "samples": [],
+        "feature": [],
+    }
+    for title, group in raw_results.groupby(["model", "samples", "feature"]):
         cat_hat = group[["prob_hat"]].values
         cat_real = group[["cat_real"]].values
         fpr, tpr, _ = roc_curve(cat_real, cat_hat)
@@ -145,13 +209,14 @@ def prep_roc_curve(raw_results):
         roc_results["roc_auc"].extend([roc_auc] * len(fpr))
         roc_results["model"].extend([title[0]] * len(fpr))
         roc_results["samples"].extend([title[1]] * len(fpr))
+        roc_results["feature"].extend([title[2]] * len(fpr))
 
     roc_df = pd.DataFrame(roc_results)
     bins = np.arange(0 - 0.02, 1 + 0.02, 0.02)
     means = np.convolve(bins, [0.5, 0.5], "valid")
     roc_df["cutter"] = pd.cut(roc_df["fpr"], bins, labels=means)
     roc_new = (
-        roc_df.groupby(["samples", "model"], as_index=False)
+        roc_df.groupby(["samples", "model", "feature"], as_index=False)
         .apply(partial(_myagg, bins=means))
         .reset_index(drop=True)
     )
@@ -177,7 +242,7 @@ def choose_best_model(X, y, model, hyper, random_state):
 
 def produce_statistics(raw_results: pd.DataFrame):
     def calc_r(group):
-        drugmodel = group["drug_model"].values[0]
+        feature = group["feature"].values[0]
         model = group["model"].values[0]
         sample = group["samples"].values[0]
         pearson = pearsonr(group["y_real"], group["y_hat"])[0]
@@ -187,7 +252,7 @@ def produce_statistics(raw_results: pd.DataFrame):
             [
                 {
                     "model": model,
-                    "drug_model": drugmodel,
+                    "feature": feature,
                     "samples": sample,
                     "pearson": pearson,
                     "auroc": auroc,
@@ -200,18 +265,19 @@ def produce_statistics(raw_results: pd.DataFrame):
     raw_results["prob_hat"] = 1 - (X - X.min(axis=0)) / (X.max(axis=0) - X.min(axis=0))
     raw_results["cat_hat"] = raw_results["y_hat"] > THRESHOLD
     stat_results = (
-        raw_results.groupby(["drug_model", "samples", "model"], as_index=False)
+        raw_results.groupby(["feature", "samples", "model"], as_index=False)
         .apply(calc_r)
         .reset_index(drop=True)
     )
     return stat_results
 
 
-@cachewrapper("cache", "SJU_plink_results")
+@cachewrapper("cache", ("SJU_plink_results", "SJU_coeff_results"))
 def run_cross_validation(models, hyper_dict, random_state):
     results = []
+    xfeats = []
     for (
-        drug,
+        feature,
         X_train,
         X_test,
         y_train,
@@ -219,12 +285,12 @@ def run_cross_validation(models, hyper_dict, random_state):
         das_test,
         cat_test,
         yscaler,
+        x_labels,
     ) in data_generator():
         for model in models:
             best_model = choose_best_model(
                 X_train, y_train, model, hyper_dict[model], random_state
             )
-
             for sample in range(SAMPLES):
                 # copy model
                 best_model_i = copy.deepcopy(best_model)
@@ -246,14 +312,14 @@ def run_cross_validation(models, hyper_dict, random_state):
                 _y_test = yscaler.inverse_transform(_y_test).flatten()
 
                 # prepare results
-                drug_list = [drug] * len(y_hat)
+                feature_list = [feature] * len(y_hat)
                 samples = [sample + 1] * len(y_hat)
                 model_list = [model.__name__] * len(y_hat)
 
                 _results_i = list(
                     zip(
                         model_list,
-                        drug_list,
+                        feature_list,
                         y_hat,
                         _y_test,
                         _cat_test,
@@ -261,31 +327,80 @@ def run_cross_validation(models, hyper_dict, random_state):
                     )
                 )
                 results.extend(_results_i)
+
+                if hasattr(best_model_i, "coef_"):
+                    importance = best_model_i.coef_.flatten()
+                elif hasattr(best_model_i, "feature_importances_"):
+                    importance = best_model_i.feature_importance_.flatten()
+                else:
+                    importance = None
+
+                if importance is not None:
+                    _xfeats_i = list(
+                        zip(
+                            [model.__name__] * len(importance),
+                            [feature] * len(importance),
+                            importance,
+                            x_labels,
+                        )
+                    )
+                xfeats.extend(_xfeats_i)
+
     results_df = pd.DataFrame(
         results,
-        columns=["model", "drug_model", "y_hat", "y_real", "cat_real", "samples"],
+        columns=["model", "feature", "y_hat", "y_real", "cat_real", "samples"],
     )
-    return results_df
+    xfeats_df = pd.DataFrame(
+        xfeats, columns=["model", "feature", "importance", "label"]
+    )
+    return results_df, xfeats_df
 
 
 def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_INDEX):
+    REGEX_PATTERNS = {"FULL": r".", "SNPS": r"^rs"}
+    SIT_OUT_COLMNS = {
+        "Response.deltaDAS",
+        "Cohort",
+        "Batch",
+        "Response.EULAR",
+        "Response.NonResp",
+        "ID",
+        "TNF-drug",
+    }
+    Y_FEATURE = ["Response.deltaDAS"]
+
     # either create data or read from cache
     data = create_drug_df(path, snp_dict)
     engineered = feature_engineering(data)
 
+    assert len(snp_dict) == 1
+
     for drug in snp_dict:
-        _df = engineered[engineered["TNF-drug"] == drug].reset_index(drop=True)
-        # _df = _df.dropna(axis=1)
 
-        X, y, das, cat = split_xy(_df)
+        for patt_name, pattern in REGEX_PATTERNS.items():
+            _df = engineered[engineered["TNF-drug"] == drug].reset_index(drop=True)
 
-        X, y, yscaler = scale_xy(X, y)
+            das = _df["baselineDAS"].values
+            cat = _df["Response.NonResp"].values
 
-        X_train, X_test, y_train, y_test, das_test, cat_test = test_train_split(
-            X, y, das, cat, test_index
-        )
+            re_cols = set(filter(re.compile(pattern).match, engineered.columns)).union(
+                SIT_OUT_COLMNS
+            )
+            _df = _df[list(re_cols)]
 
-        yield drug, X_train, X_test, y_train, y_test, das_test, cat_test, yscaler
+            drop_cols = SIT_OUT_COLMNS.intersection(set(re_cols))
+
+            _df_x = _df.drop(drop_cols, axis=1)
+            X = _df_x.values
+            y = _df[Y_FEATURE].values
+
+            X, y, yscaler = scale_xy(X, y)
+
+            X_train, X_test, y_train, y_test, das_test, cat_test = test_train_split(
+                X, y, das, cat, test_index
+            )
+
+            yield patt_name, X_train, X_test, y_train, y_test, das_test, cat_test, yscaler, _df_x.columns
 
 
 def scale_xy(X, y):
@@ -317,24 +432,6 @@ def feature_engineering(data):
     data = data.drop(["Drug"], axis=1)
     # data = pd.concat([data, onehot_drugs], axis=1)
     return data
-
-
-def split_xy(df):
-    y_cols = ["Response.deltaDAS"]
-    not_X_cols = [
-        "Response.deltaDAS",
-        "Cohort",
-        "Batch",
-        "Response.EULAR",
-        "Response.NonResp",
-        "ID",
-        "TNF-drug",
-    ]
-    X = df.drop(not_X_cols, axis=1).values
-    y = df[y_cols].values
-    das = df["baselineDAS"].values
-    cat = df["Response.NonResp"].values
-    return X, y, das, cat
 
 
 @cachewrapper("cache", "SJU_plink_fulldata")
