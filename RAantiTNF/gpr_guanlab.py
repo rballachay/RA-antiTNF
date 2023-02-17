@@ -3,6 +3,7 @@ import re
 from functools import partial
 from pathlib import Path
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -26,7 +27,7 @@ from utils import NonResponseRA
 RANDOM_STATE = 0
 META_PATH = "metadata/guanlab/"
 SNP_BY_DRUG = {
-    "adalumimab": "Guanlab_adalimumab_snps",
+    "adalimumab": "Guanlab_adalimumab_snps",
     "etanercept": "Guanlab_etanercept_snps",
     "infliximab": "Guanlab_infliximab_snps",
 }
@@ -79,9 +80,26 @@ def visualize_results(raw_results, stat_results, roc_results):
     plots = {}
     sns.set_theme()
 
-    plt.figure()
-    f = sns.violinplot(data=stat_results, x="feature", y="pearson", hue="drug_model")
-    plots["pearson"] = f.get_figure()
+    palette = sns.color_palette("hls", 5)
+
+    fig, axes = plt.subplots(stat_results["drug_model"].nunique(), 1, figsize=(5, 12))
+    for (title, group), ax in zip(
+        stat_results.groupby("drug_model", as_index=False), axes
+    ):
+        f = sns.barplot(
+            data=group,
+            x="feature",
+            y="pearson",
+            palette=palette,
+            order=["Full", "Baseline", "AGM", "G-free", "Genetic"],
+            ax=ax,
+        )
+        f.set_title(f"ΔDAS Pearson Correlation {title}")
+        f.set_ylim((0, 1))
+        for container in f.containers:
+            f.bar_label(container, label_type="center", fmt="%.3f")
+    fig.tight_layout()
+    plots["pearson"] = fig
 
     plt.figure()
     f = sns.scatterplot(data=raw_results, x="y_real", y="y_hat", hue="drug_model")
@@ -90,15 +108,40 @@ def visualize_results(raw_results, stat_results, roc_results):
     plots["scatterplot"] = f.get_figure()
 
     plt.figure()
-    f = sns.violinplot(data=stat_results, x="feature", y="auroc", hue="drug_model")
+    fig, axes = plt.subplots(stat_results["drug_model"].nunique(), 1, figsize=(5, 12))
+    for (title, group), ax in zip(
+        stat_results.groupby("drug_model", as_index=False), axes
+    ):
+        f = sns.barplot(
+            data=group,
+            x="feature",
+            y="auroc",
+            palette=palette,
+            order=["Full", "Baseline", "AGM", "G-free", "Genetic"],
+            ax=ax,
+        )
+        f.set_title(f"EULAR Response AUROC {title}")
+        f.set_ylim((0, 1))
+        for container in f.containers:
+            f.bar_label(container, label_type="center", fmt="%.3f")
+    fig.tight_layout()
     plots["auroc"] = f.get_figure()
 
     plt.figure()
-    f = sns.violinplot(data=stat_results, x="feature", y="accuracy", hue="drug_model")
+    f = sns.barplot(
+        data=stat_results,
+        x="feature",
+        y="accuracy",
+        hue="drug_model",
+        palette=palette,
+        order=["Full", "Baseline", "AGM", "G-free", "Genetic"],
+    )
+    f.set_ylim((0, 1))
     plots["accuracy"] = f.get_figure()
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 5))
-    palettes = [("green", "orange", "blue"), ("red", "purple", "cyan")]
+    palettes = sns.color_palette("hls", n_colors=6)
+    palettes = (palettes[:3], palettes[3:])
 
     for ax, (feature, roc_group), palette in zip(
         axes, roc_results.groupby("feature"), palettes
@@ -295,7 +338,14 @@ def run_cross_validation(model, hyper_space, kernels, random_state):
 
 
 def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_INDEX):
-    REGEX_PATTERNS = {"SNPS": r"^rs", "FULL": r"."}
+    REGEX_PATTERNS = {
+        "Full": r".",
+        "Baseline": r"baselineDAS",
+        "AGM": r"Age|Gender|Mtx",
+        "AGM": r"Age|Gender|Mtx",
+        "G-free": r"^(?!Gender).*$",
+        "Genetic": r"^rs",
+    }
     SIT_OUT_COLMNS = {
         "Response.deltaDAS",
         "Cohort",
@@ -304,6 +354,8 @@ def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_I
         "Response.NonResp",
         "ID",
         "TNF-drug",
+        "tt_split",
+        "Drug",
     }
     Y_FEATURE = ["Response.deltaDAS"]
 
@@ -314,6 +366,10 @@ def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_I
 
         for patt_name, pattern in REGEX_PATTERNS.items():
             _df = engineered[engineered["TNF-drug"] == drug].reset_index(drop=True)
+            _df["tt_split"] = ["train"] * test_index + ["test"] * (
+                len(_df) - test_index
+            )
+            train_indices = _df["tt_split"].apply(lambda x: x == "train").values
 
             das = _df["baselineDAS"].values
             cat = _df["Response.NonResp"].values
@@ -332,7 +388,7 @@ def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_I
             dropped = list(
                 filter(
                     lambda x: not x.startswith("rs"),
-                    set(sample.columns) - set(_df.columns),
+                    set(sample.columns) - set(_df.columns.tolist()),
                 )
             )
             assert not dropped
@@ -343,7 +399,7 @@ def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_I
             X, y, yscaler = scale_xy(X, y)
 
             X_train, X_test, y_train, y_test, das_test, cat_test = test_train_split(
-                X, y, das, cat, test_index
+                X, y, das, cat, train_indices
             )
 
             yield drug, patt_name, X_train, X_test, y_train, y_test, das_test, cat_test, yscaler
@@ -357,16 +413,14 @@ def scale_xy(X, y):
     return X, y, yscaler
 
 
-def test_train_split(X, y, das, cat, test_index, len_data=2706):
-    assert X.shape[0] == len_data
-    assert y.shape[0] == len_data
+def test_train_split(X, y, das, cat, train_indices):
     return (
-        X[:test_index],
-        X[test_index:],
-        y[:test_index],
-        y[test_index:],
-        das[test_index:],
-        cat[test_index:],
+        X[train_indices],
+        X[~train_indices],
+        y[train_indices],
+        y[~train_indices],
+        das[~train_indices],
+        cat[~train_indices],
     )
 
 
@@ -374,31 +428,14 @@ def feature_engineering(data):
     to_impute = ["baselineDAS", "Age", "Gender", "Mtx"]
     knn = KNNImputer(n_neighbors=5)
     data[to_impute] = knn.fit_transform(data[to_impute])
+    data["Drug"] = data["Drug"].fillna("none")
 
     # convert drugs to one-hot encoding
     onehot_drugs = pd.get_dummies(data["Drug"])
-    data = data.drop(["Drug"], axis=1)
+    # data = data.drop(["Drug"], axis=1)
 
-    data = pd.concat([data, onehot_drugs], axis=1)
+    # data = pd.concat([data, onehot_drugs], axis=1)
     return data
-
-
-def split_xy(df):
-    y_cols = ["Response.deltaDAS"]
-    not_X_cols = [
-        "Response.deltaDAS",
-        "Cohort",
-        "Batch",
-        "Response.EULAR",
-        "Response.NonResp",
-        "ID",
-        "TNF-drug",
-    ]
-    X = df.drop(not_X_cols, axis=1).values
-    y = df[y_cols].values
-    das = df["baselineDAS"].values
-    cat = df["Response.NonResp"].values
-    return X, y, das, cat
 
 
 @cachewrapper("cache", "guanlab_fulldata")

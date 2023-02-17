@@ -81,8 +81,23 @@ def visualize_results(raw_results, stat_results, roc_results, xfeats):
     plots = {}
     sns.set_theme()
 
-    plt.figure()
-    f = sns.violinplot(data=stat_results, x="feature", y="pearson", hue="model")
+    palette = sns.color_palette("hls", 5)
+
+    fig, axes = plt.subplots(stat_results["model"].nunique(), 1, figsize=(5, 12))
+    for (title, group), ax in zip(stat_results.groupby("model", as_index=False), axes):
+        f = sns.barplot(
+            data=group,
+            x="feature",
+            y="pearson",
+            palette=palette,
+            order=["Full", "Baseline", "AGM", "G-free", "Genetic"],
+            ax=ax,
+        )
+        f.set_title(f"ΔDAS Pearson Correlation {title}")
+        f.set_ylim((0, 1))
+        for container in f.containers:
+            f.bar_label(container, label_type="center", fmt="%.3f")
+    fig.tight_layout()
     plots["pearson"] = f.get_figure()
 
     plt.figure()
@@ -92,7 +107,21 @@ def visualize_results(raw_results, stat_results, roc_results, xfeats):
     plots["scatterplot"] = f.get_figure()
 
     plt.figure()
-    f = sns.violinplot(data=stat_results, x="feature", y="auroc", hue="model")
+    fig, axes = plt.subplots(stat_results["model"].nunique(), 1, figsize=(5, 12))
+    for (title, group), ax in zip(stat_results.groupby("model", as_index=False), axes):
+        f = sns.barplot(
+            data=group,
+            x="feature",
+            y="auroc",
+            palette=palette,
+            order=["Full", "Baseline", "AGM", "G-free", "Genetic"],
+            ax=ax,
+        )
+        f.set_title(f"EULAR Response AUROC {title}")
+        f.set_ylim((0, 1))
+        for container in f.containers:
+            f.bar_label(container, label_type="center", fmt="%.3f")
+    fig.tight_layout()
     plots["auroc"] = f.get_figure()
 
     plt.figure()
@@ -100,10 +129,14 @@ def visualize_results(raw_results, stat_results, roc_results, xfeats):
     plots["accuracy"] = f.get_figure()
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 5))
-    palettes = [("green", "orange", "blue"), ("red", "purple", "cyan")]
 
+    nun = roc_results["model"].nunique()
+    palettes = sns.color_palette("hls", nun * 2)
+    palettes = palettes[nun:], palettes[:nun]
+
+    roc_ok = roc_results[roc_results["feature"].isin(["Full", "Genetic", "ASM"])]
     for ax, (feature, roc_group), palette in zip(
-        axes, roc_results.groupby("feature"), palettes
+        axes, roc_ok.groupby("feature"), palettes
     ):
 
         f = sns.lineplot(
@@ -116,10 +149,16 @@ def visualize_results(raw_results, stat_results, roc_results, xfeats):
 
         roc_auc = list(roc_group.groupby(["model"])[["roc_auc"]].mean().itertuples())
         labels = list(map(lambda x: f"{x[0]}, {x[1]:.2f}", roc_auc))
-        ax.legend(title="Mean AUROC", loc="upper left", labels=labels)
+        ax.legend(
+            title="Mean AUROC",
+            loc="upper left",
+            labels=labels,
+            handles=ax.get_legend().legendHandles,
+        )
 
     plots["roccurve"] = fig
 
+    xfeats = xfeats[xfeats["feature"].isin(["Full", "Genetic"])]
     fig, axes = plt.subplots(
         xfeats["feature"].nunique(), xfeats["model"].nunique(), figsize=(20, 8)
     )
@@ -331,7 +370,7 @@ def run_cross_validation(models, hyper_dict, random_state):
                 if hasattr(best_model_i, "coef_"):
                     importance = best_model_i.coef_.flatten()
                 elif hasattr(best_model_i, "feature_importances_"):
-                    importance = best_model_i.feature_importance_.flatten()
+                    importance = best_model_i.feature_importances_.flatten()
                 else:
                     importance = None
 
@@ -357,7 +396,14 @@ def run_cross_validation(models, hyper_dict, random_state):
 
 
 def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_INDEX):
-    REGEX_PATTERNS = {"FULL": r".", "SNPS": r"^rs"}
+    REGEX_PATTERNS = {
+        "Full": r".",
+        "Baseline": r"baselineDAS",
+        "AGM": r"Age|Gender|Mtx",
+        "AGM": r"Age|Gender|Mtx",
+        "G-free": r"^(?!Gender).*$",
+        "Genetic": r"^rs",
+    }
     SIT_OUT_COLMNS = {
         "Response.deltaDAS",
         "Cohort",
