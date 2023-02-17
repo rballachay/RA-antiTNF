@@ -50,8 +50,36 @@ PLOT_DICT = {
     "auroc": "auroc_results.png",
     "accuracy": "accuracy_results.png",
     "roccurve": "roccurve_results.png",
+    "kernel": "kernel_results.png",
 }
 RESULTS_PATH = Path("results/GPR_guanlab/")
+REGEX_PATTERNS = {
+    "Full": r".",
+    "Baseline": r"baselineDAS",
+    "AGM": r"Age|Gender|Mtx",
+    "AGM": r"Age|Gender|Mtx",
+    "G-free": r"^(?!Gender).*$",
+    "Genetic": r"^rs",
+}
+SIT_OUT_COLMNS = {
+    "Response.deltaDAS",
+    "Cohort",
+    "Batch",
+    "Response.EULAR",
+    "Response.NonResp",
+    "ID",
+    "TNF-drug",
+    "tt_split",
+    "Drug",
+}
+Y_FEATURE = ["Response.deltaDAS"]
+KERNEL_DICT = {
+    "Full": 12,
+    "Baseline": 3,
+    "AGM": r"Age|Gender|Mtx",
+    "G-free": r"^(?!Gender).*$",
+    "Genetic": r"^rs",
+}
 
 
 def main(
@@ -63,20 +91,22 @@ def main(
     plot_dict=PLOT_DICT,
 ):
     # create our model with all default parameters
-    raw_results = run_cross_validation(model, hyper_space, kernels, random_state)
+    raw_results, kernel_results = run_cross_validation(
+        model, hyper_space, kernels, random_state
+    )
     stat_results = produce_statistics(raw_results)
 
     roc_results = prep_roc_curve(raw_results)
 
     # visualize results + plot
-    plots = visualize_results(raw_results, stat_results, roc_results)
+    plots = visualize_results(raw_results, stat_results, roc_results, kernel_results)
 
     # save to output directory
     for title, fig in plots.items():
         fig.savefig(str(results_path / plot_dict[title]))
 
 
-def visualize_results(raw_results, stat_results, roc_results):
+def visualize_results(raw_results, stat_results, roc_results, kernel_results):
     plots = {}
     sns.set_theme()
 
@@ -163,6 +193,25 @@ def visualize_results(raw_results, stat_results, roc_results):
 
     plots["roccurve"] = fig
 
+    fig, axes = plt.subplots(1, kernel_results["drug_model"].nunique(), figsize=(15, 5))
+    for (title, group), ax in zip(
+        kernel_results.groupby("drug_model", as_index=False), axes
+    ):
+        f = sns.barplot(
+            data=group,
+            x="feature",
+            y="length",
+            palette=palette,
+            order=["Full", "Baseline", "AGM", "G-free", "Genetic"],
+            ax=ax,
+        )
+        f.set_title(f"Optimized Kernel Length {title}")
+        f.set_yscale("log")
+        for container in f.containers:
+            f.bar_label(container, label_type="center", fmt="%.3f")
+    fig.tight_layout()
+    plots["kernel"] = fig
+
     return plots
 
 
@@ -225,7 +274,7 @@ def prep_roc_curve(raw_results):
 
 
 def choose_best_model(X, y, model, hyper_space, kernels, random_state):
-    return GaussianProcessRegressor(kernel=RBF(1000), alpha=4)
+    return GaussianProcessRegressor(kernel=RBF(), alpha=4)
     kernel_best = []
     for kernel in kernels:
         opt = BayesSearchCV(
@@ -267,7 +316,7 @@ def produce_statistics(raw_results: pd.DataFrame):
             ]
         )
 
-    raw_results["prob_hat"] = 1 - raw_results["y_hat"] / THRESHOLD
+    raw_results["prob_hat"] = raw_results["y_hat"] / raw_results["das_real"]
     stat_results = (
         raw_results.groupby(["drug_model", "samples", "feature"], as_index=False)
         .apply(calc_r)
@@ -276,9 +325,10 @@ def produce_statistics(raw_results: pd.DataFrame):
     return stat_results
 
 
-@cachewrapper("cache", "guanlab_exp_results")
+@cachewrapper("cache", ("guanlab_exp_results", "guanlab_kernel_info"))
 def run_cross_validation(model, hyper_space, kernels, random_state):
     results = []
+    kernel_info = []
     for (
         drug,
         feature,
@@ -304,6 +354,8 @@ def run_cross_validation(model, hyper_space, kernels, random_state):
 
             # fit + predict model
             gpr_i.fit(_X_train, _y_train)
+            print(f"{drug}, {feature} {gpr_i.kernel_}")
+
             y_hat = yscaler.inverse_transform(gpr_i.predict(_X_test)).flatten()
             _y_test = yscaler.inverse_transform(_y_test).flatten()
 
@@ -319,9 +371,25 @@ def run_cross_validation(model, hyper_space, kernels, random_state):
             assert len(cat_hat) == len(_cat_test)
 
             _results_i = list(
-                zip(drug_list, features, y_hat, _y_test, cat_hat, _cat_test, samples)
+                zip(
+                    drug_list,
+                    features,
+                    y_hat,
+                    _y_test,
+                    cat_hat,
+                    _cat_test,
+                    samples,
+                    _das_test,
+                )
             )
             results.extend(_results_i)
+
+            length = gpr_i.kernel_.length_scale
+            _kernelinfo_i = list(
+                zip([drug] * 1, [feature] * 1, [sample] * 1, [length] * 1)
+            )
+            kernel_info.extend(_kernelinfo_i)
+
     results_df = pd.DataFrame(
         results,
         columns=[
@@ -332,32 +400,16 @@ def run_cross_validation(model, hyper_space, kernels, random_state):
             "cat_hat",
             "cat_real",
             "samples",
+            "das_real",
         ],
     )
-    return results_df
+    kernel_df = pd.DataFrame(
+        kernel_info, columns=["drug_model", "feature", "samples", "length"]
+    )
+    return results_df, kernel_df
 
 
 def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_INDEX):
-    REGEX_PATTERNS = {
-        "Full": r".",
-        "Baseline": r"baselineDAS",
-        "AGM": r"Age|Gender|Mtx",
-        "AGM": r"Age|Gender|Mtx",
-        "G-free": r"^(?!Gender).*$",
-        "Genetic": r"^rs",
-    }
-    SIT_OUT_COLMNS = {
-        "Response.deltaDAS",
-        "Cohort",
-        "Batch",
-        "Response.EULAR",
-        "Response.NonResp",
-        "ID",
-        "TNF-drug",
-        "tt_split",
-        "Drug",
-    }
-    Y_FEATURE = ["Response.deltaDAS"]
 
     # either create data or read from cache
     data = create_drug_df(path, snp_dict)
