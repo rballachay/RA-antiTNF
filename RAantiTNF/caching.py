@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 
-def cachewrapper(path, prefix):
+def cachewrapper(path, prefix, use_cache):
     """caching decorator to save intermediate dfs,
     makes repeated testing much faster
     """
@@ -22,7 +22,7 @@ def cachewrapper(path, prefix):
 
             @wraps(function)
             def wrapper(*args, **kwargs):
-                if os.path.exists(fullpath):
+                if os.path.exists(fullpath) and use_cache:
                     df = pd.read_csv(fullpath)
                 else:
                     df = function(*args, **kwargs)
@@ -34,7 +34,7 @@ def cachewrapper(path, prefix):
 
             @wraps(function)
             def wrapper(*args, **kwargs):
-                if all([os.path.exists(i) for i in fullpath]):
+                if all([os.path.exists(i) for i in fullpath]) and use_cache:
                     df = [pd.read_csv(i) for i in fullpath]
                 else:
                     df = function(*args, **kwargs)

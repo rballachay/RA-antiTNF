@@ -3,26 +3,22 @@ import re
 from functools import partial
 from pathlib import Path
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import scikitplot as skplt
 import seaborn as sns
 from caching import cachewrapper
 from datareader import create_clinical_data, get_dosage_data
 from globals import TEST_INDEX
 from scipy.stats import pearsonr
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ExpSineSquared, RationalQuadratic
+from sklearn.gaussian_process.kernels import RBF
 from sklearn.impute import KNNImputer
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import accuracy_score, auc, roc_auc_score, roc_curve
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.utils import resample
 from skopt import BayesSearchCV
 from skopt.space import Real
-from utils import NonResponseRA
 
 RANDOM_STATE = 0
 META_PATH = "metadata/guanlab/"
@@ -41,9 +37,6 @@ KERNEL_SPACE = [k(l) for k in _KERNELS for l in _LENGTH_SPACE]
 
 # define global values to optimize
 HYPER_SPACE = {"alpha": Real(1e-6, 1e2, prior="log-uniform")}
-SAMPLES = 10
-THRESHOLD = 2.5
-
 PLOT_DICT = {
     "pearson": "pearson_results.png",
     "scatterplot": "scatterplot_results.png",
@@ -80,6 +73,10 @@ KERNEL_DICT = {
     "G-free": r"^(?!Gender).*$",
     "Genetic": r"^rs",
 }
+
+SAMPLES = 10
+THRESHOLD = 2.5
+USE_CACHE = False
 
 
 def main(
@@ -325,7 +322,7 @@ def produce_statistics(raw_results: pd.DataFrame):
     return stat_results
 
 
-@cachewrapper("cache", ("guanlab_exp_results", "guanlab_kernel_info"))
+@cachewrapper("cache", ("guanlab_exp_results", "guanlab_kernel_info"), USE_CACHE)
 def run_cross_validation(model, hyper_space, kernels, random_state):
     results = []
     kernel_info = []
@@ -490,7 +487,7 @@ def feature_engineering(data):
     return data
 
 
-@cachewrapper("cache", "guanlab_fulldata")
+@cachewrapper("cache", "guanlab_fulldata", USE_CACHE)
 def create_drug_df(path, snp_dict):
     """returns a dictionary with three keys, one for each drug. each of
     these drugs then have two subkeys, one for training and one for testing.

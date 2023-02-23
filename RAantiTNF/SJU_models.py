@@ -12,6 +12,8 @@ from datareader import create_clinical_data, get_dosage_data
 from globals import TEST_INDEX
 from scipy.stats import pearsonr
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF
 from sklearn.impute import KNNImputer
 from sklearn.linear_model import Lasso
 from sklearn.metrics import accuracy_score, auc, roc_auc_score, roc_curve
@@ -24,7 +26,7 @@ from skopt.space import Categorical, Integer, Real
 RANDOM_STATE = 0
 META_PATH = "metadata/SJU_plink/"
 SNP_BY_DRUG = {
-    "all": "plink_LD_SNPs",
+    "all": "plink_LD_SNPs_covardas",
 }
 HYPER_DICT = {
     Lasso: {"alpha": Real(1e-3, 1, prior="log-uniform")},
@@ -34,11 +36,13 @@ HYPER_DICT = {
         "epsilon": Real(1e-3, 10, prior="log-uniform"),
     },
     RandomForestRegressor: {"n_estimators": Integer(10, 1000, prior="log-uniform")},
+    GaussianProcessRegressor: {"alpha": Real(1e-1, 1e2, prior="log-uniform")},
 }
 MODEL_DICT = {
     Lasso: Lasso(alpha=0.01),
     SVR: SVR(kernel="linear", C=0.1, epsilon=0.01),
     RandomForestRegressor: RandomForestRegressor(n_estimators=300),
+    GaussianProcessRegressor: GaussianProcessRegressor(kernel=RBF(), alpha=4),
 }
 PLOT_DICT = {
     "pearson": "pearson_results.png",
@@ -48,14 +52,32 @@ PLOT_DICT = {
     "roccurve": "roccurve_results.png",
     "xfeatures": "feature_importance.png",
 }
-RESULTS_PATH = Path("results/SJU_models/")
+RESULTS_PATH = Path("results/SJU_models/exp_1_feb22")
+REGEX_PATTERNS = {
+    "Full": r".",
+    "Baseline": r"baselineDAS",
+    "AGM": r"Age|Gender|Mtx",
+    "G-free": r"^(?!Gender).*$",
+    "Genetic": r"^rs",
+}
+SIT_OUT_COLMNS = {
+    "Response.deltaDAS",
+    "Cohort",
+    "Batch",
+    "Response.EULAR",
+    "Response.NonResp",
+    "ID",
+    "TNF-drug",
+}
+Y_FEATURE = ["Response.deltaDAS"]
 
 THRESHOLD = 2.5
 SAMPLES = 10
+USE_CACHE = False
 
 
 def main(
-    models=(SVR, RandomForestRegressor, Lasso),
+    models=(SVR, RandomForestRegressor, Lasso, GaussianProcessRegressor),
     hyper_dict=HYPER_DICT,
     random_state=RANDOM_STATE,
     results_path=RESULTS_PATH,
@@ -311,7 +333,7 @@ def produce_statistics(raw_results: pd.DataFrame):
     return stat_results
 
 
-@cachewrapper("cache", ("SJU_plink_results", "SJU_coeff_results"))
+@cachewrapper("cache", ("SJU_plink_results", "SJU_coeff_results"), USE_CACHE)
 def run_cross_validation(models, hyper_dict, random_state):
     results = []
     xfeats = []
@@ -396,24 +418,6 @@ def run_cross_validation(models, hyper_dict, random_state):
 
 
 def data_generator(path=Path(META_PATH), snp_dict=SNP_BY_DRUG, test_index=TEST_INDEX):
-    REGEX_PATTERNS = {
-        "Full": r".",
-        "Baseline": r"baselineDAS",
-        "AGM": r"Age|Gender|Mtx",
-        "AGM": r"Age|Gender|Mtx",
-        "G-free": r"^(?!Gender).*$",
-        "Genetic": r"^rs",
-    }
-    SIT_OUT_COLMNS = {
-        "Response.deltaDAS",
-        "Cohort",
-        "Batch",
-        "Response.EULAR",
-        "Response.NonResp",
-        "ID",
-        "TNF-drug",
-    }
-    Y_FEATURE = ["Response.deltaDAS"]
 
     # either create data or read from cache
     data = create_drug_df(path, snp_dict)
@@ -480,7 +484,7 @@ def feature_engineering(data):
     return data
 
 
-@cachewrapper("cache", "SJU_plink_fulldata")
+@cachewrapper("cache", "SJU_plink_fulldata", USE_CACHE)
 def create_drug_df(path, snp_dict):
     """returns a dictionary with three keys, one for each drug. each of
     these drugs then have two subkeys, one for training and one for testing.
