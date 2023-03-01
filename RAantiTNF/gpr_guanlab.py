@@ -50,7 +50,6 @@ REGEX_PATTERNS = {
     "Full": r".",
     "Baseline": r"baselineDAS",
     "AGM": r"Age|Gender|Mtx",
-    "AGM": r"Age|Gender|Mtx",
     "G-free": r"^(?!Gender).*$",
     "Genetic": r"^rs",
 }
