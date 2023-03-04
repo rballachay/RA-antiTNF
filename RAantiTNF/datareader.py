@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 import dask.dataframe as dd
+import numpy as np
 import pandas as pd
 
 # number of chromosomes, aka number of dosage files to read
@@ -10,6 +11,7 @@ N_ENTRIES = 2706
 
 DOSAGE_PATH = "data/DREAM_RA_Responders_DosageData"
 CLINICAL_PATH = "data/DREAM_RA_Responders_PhenoCov_Full.txt"
+PICKLE_PATH = "data/DREAM_pickles"
 
 
 def get_dosage_data(
@@ -36,10 +38,12 @@ def get_dosage_data(
 
 
 def create_dosage_df(
+    pickle=False,
     n_entries=N_ENTRIES,
     n_chroms=N_CHROMS,
     dosage_prefix=Path(DOSAGE_PATH),
-    filename=Path("Training_chr.dos"),
+    pickle_prefix=Path(PICKLE_PATH),
+    filename=Path("Training_chr"),
     cols=[
         "chromosome",
         "marker_id",
@@ -53,10 +57,16 @@ def create_dosage_df(
     was chosen instead of pandas) + return. is to be used in the case that snps
     are not already known
     """
+    if pickle:
+        prefix = pickle_prefix
+        suffix = ".pkl"
+    else:
+        prefix = dosage_prefix
+        suffix = ".dos"
     # chromosome file names
     chr_filenames = list(
         map(
-            lambda x: dosage_prefix / f"{filename.stem}{x+1}{filename.suffix}",
+            lambda x: prefix / f"{filename.stem}{x+1}{suffix}",
             range(n_chroms),
         )
     )
@@ -64,12 +74,11 @@ def create_dosage_df(
     names = cols + subjects
     dtypes = dict(zip(subjects, ["float64"] * len(subjects)))
 
-    df = dd.read_csv(chr_filenames[0], sep=" ", header=None, names=names, dtype=dtypes)
-    for file in chr_filenames[1:]:
-        df2 = dd.read_csv(file, sep=" ", header=None, names=names, dtype=dtypes)
-        df = dd.concat([df, df2])
-
-    return df
+    for file in chr_filenames:
+        if pickle:
+            yield pd.read_pickle(file)
+        else:
+            yield pd.read_csv(file, sep=" ", header=None, names=names, dtype=dtypes)
 
 
 def create_clinical_data(

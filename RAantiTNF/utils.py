@@ -43,3 +43,18 @@ class NonResponseRA:
                 return "moderate"
             elif delta_das < 1.2:
                 return "none"
+
+
+def read_snps(path, snp_dict) -> dict:
+    """read in the text files from guanlab that describe which snps belong"""
+    out_dict = {}
+    for drug, file in snp_dict.items():
+        snppath = path / file
+        with open(snppath, "r") as txtfile:
+            lines = txtfile.read()
+            snps = list(filter(lambda x: x, lines.split("\t")))
+            snps = [i for x in snps for i in x.split("\n")]
+            snps = list(filter(lambda x: x, snps))
+
+        out_dict[drug] = snps
+    return out_dict

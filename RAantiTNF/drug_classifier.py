@@ -13,7 +13,13 @@ from globals import TEST_INDEX
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import KNNImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import auc, roc_auc_score, roc_curve
+from sklearn.metrics import (
+    accuracy_score,
+    auc,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+)
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import resample
 from skopt import BayesSearchCV
@@ -21,9 +27,9 @@ from skopt.space import Categorical, Integer, Real
 
 RANDOM_STATE = 0
 CACHE_NAME = "drug_classifier"
-META_PATH = "metadata/SJU_plink/"
+META_PATH = "metadata/drug_models/"
 SNP_BY_DRUG = {
-    "all": "plink_LD_SNPs_best",
+    "all": "top_100_alldrugs",
 }
 HYPER_DICT = {
     LogisticRegression: {
@@ -32,6 +38,10 @@ HYPER_DICT = {
     },
     RandomForestClassifier: {"n_estimators": Integer(50, 500)},
 }
+MODEL_DICT = {
+    LogisticRegression: LogisticRegression(C=1),
+    RandomForestClassifier: RandomForestClassifier(n_estimators=250),
+}
 PLOT_DICT = {
     "pearson": "pearson_results.png",
     "scatterplot": "scatterplot_results.png",
@@ -39,8 +49,9 @@ PLOT_DICT = {
     "accuracy": "accuracy_results.png",
     "roccurve": "roccurve_results.png",
     "xfeatures": "feature_importance.png",
+    "confusion": "confusion_matrix.png",
 }
-RESULTS_PATH = Path("results/SJU_models/exp_3_feb22")
+RESULTS_PATH = Path("results/drug_models/exp_3_mar2")
 REGEX_PATTERNS = {
     "Full": r".",
     "Baseline": r"baselineDAS",
@@ -62,7 +73,7 @@ Y_FEATURE = ["Drug"]
 
 THRESHOLD = 2.5
 SAMPLES = 10
-USE_CACHE = False
+USE_CACHE = True
 
 
 def main(
@@ -92,6 +103,34 @@ def visualize_results(raw_results, stat_results, roc_results, xfeats):
     plots = {}
     sns.set_theme()
 
+    raw_results = raw_results.copy()
+
+    fig, axes = plt.subplots(
+        stat_results["model"].nunique(),
+        stat_results["feature"].nunique(),
+        figsize=(35, 12),
+    )
+    for (titles, subdf), ax in zip(
+        raw_results.groupby(["model", "feature"]), axes.flatten()
+    ):
+        y_hat = np.argmax(
+            subdf[["adalimumab", "etanercept", "infliximab"]].values, axis=1
+        )
+        y_real = subdf["y_real"].values
+        confusion = pd.DataFrame(
+            confusion_matrix(y_real, y_hat),
+            columns=["adalimumab", "etanercept", "infliximab"],
+            index=["adalimumab", "etanercept", "infliximab"],
+        )
+        sns.heatmap(confusion, annot=True, fmt="d", ax=ax)
+        ax.set_xlabel("True Drug")
+        ax.set_ylabel("Predicted Drug")
+        ax.set_title(
+            f'{", ".join(titles)}, Accuracy = {accuracy_score(y_real,y_hat):.2f}'
+        )
+    fig.tight_layout()
+    plots["confusion"] = fig.get_figure()
+
     palette = sns.color_palette("hls", 5)
 
     plt.figure()
@@ -120,18 +159,20 @@ def visualize_results(raw_results, stat_results, roc_results, xfeats):
 
     nun = roc_ok["feature"].nunique()
     drug = roc_ok["drug"].nunique()
-    palettes = [list(sns.color_palette("hls", drug))] * nun
+    palettes = [list(sns.color_palette("hls", drug))] * nun * roc_ok["model"].nunique()
 
-    fig, axes = plt.subplots(1, roc_ok["feature"].nunique(), figsize=(15, 5))
+    fig, axes = plt.subplots(
+        roc_ok["feature"].nunique(), roc_ok["model"].nunique(), figsize=(15, 10)
+    )
 
     for ax, (feature, roc_group), palette in zip(
-        axes, roc_ok.groupby(["feature"]), palettes
+        axes.flatten(), roc_ok.groupby(["feature", "model"]), palettes
     ):
         f = sns.lineplot(
             data=roc_group, x="fpr", y="tpr", hue="drug", ax=ax, palette=palette
         )
         ax.plot(np.arange(0, 2), np.arange(0, 2), "k--")
-        ax.title.set_text(f"{feature} Model")
+        ax.title.set_text(f"{', '.join(feature)} Model")
         ax.set_xlabel("False Positive Rate")
         ax.set_ylabel("True Positive Rate")
 
@@ -144,6 +185,7 @@ def visualize_results(raw_results, stat_results, roc_results, xfeats):
             handles=ax.get_legend().legendHandles,
         )
 
+    fig.tight_layout()
     plots["roccurve"] = fig
 
     xfeats = xfeats[xfeats["feature"].isin(["Full", "Genetic"])]
@@ -256,6 +298,7 @@ def prep_roc_curve(raw_results):
 
 
 def choose_best_model(X, y, model, hyper, random_state):
+    return MODEL_DICT[model]
     opt = BayesSearchCV(
         model(),
         hyper,

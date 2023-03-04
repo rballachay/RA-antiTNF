@@ -1,8 +1,11 @@
 import sqlite3
 from pathlib import Path
 
+import pandas as pd
+
 # number of chromosomes, aka number of dosage files to read
 N_CHROMS = 22
+N_ENTRIES = 2706
 
 
 def create_dosage_data(
@@ -54,5 +57,37 @@ def create_dosage_data(
     con.commit()
 
 
+def convert_dos_to_pickle(
+    n_chroms=N_CHROMS,
+    n_entries=N_ENTRIES,
+    dosage_prefix=Path("data/DREAM_RA_Responders_DosageData"),
+    filename=Path("Training_chr.dos"),
+    pickle_path=Path("data/DREAM_pickles"),
+    cols=[
+        "chromosome",
+        "marker_id",
+        "location",
+        "allele_1",
+        "allele_2",
+        "frequency",
+    ],
+):
+    # chromosome file names
+    chr_filenames = map(
+        lambda x: dosage_prefix / f"{filename.stem}{x+1}{filename.suffix}",
+        range(n_chroms),
+    )
+
+    subjects = [f"subject_{n+1}" for n in range(n_entries)]
+    names = cols + subjects
+    dtypes = dict(zip(subjects, ["float64"] * len(subjects)))
+
+    for file in list(chr_filenames)[5:]:
+        print(f"starting {file}")
+        df = pd.read_csv(file, sep=" ", header=None, names=names, dtype=dtypes)
+        df.to_pickle(str(pickle_path / f"{file.stem}.pkl"))
+
+
 if __name__ == "__main__":
-    create_dosage_data()
+    # create_dosage_data()
+    convert_dos_to_pickle()
